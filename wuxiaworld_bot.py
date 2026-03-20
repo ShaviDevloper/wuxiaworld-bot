@@ -96,14 +96,20 @@ async def login(page, context):
     log.info("Navigating to login page …")
     await page.goto(LOGIN_URL, wait_until="networkidle")
 
-    await page.fill("input[type='email'], input[name='email'], #email", EMAIL)
-    await page.fill("input[type='password'], input[name='password'], #password", PASSWORD)
+    await page.fill("#Email", EMAIL)
+    await page.fill("#Password", PASSWORD)
+
+    # Check "Remember Me" if available
+    try:
+        remember = await page.query_selector("#RememberMe")
+        if remember and not await remember.is_checked():
+            await remember.check()
+            log.info("Checked 'Remember Me'")
+    except Exception:
+        pass
 
     log.info("Submitting credentials …")
-    await page.click(
-        "button[type='submit'], input[type='submit'], "
-        ".login-btn, button:has-text('Sign In'), button:has-text('Log In')"
-    )
+    await page.click("button.btn-inverse, button:has-text('Sign In')")
 
     try:
         await page.wait_for_url(lambda u: "login" not in u, timeout=TIMEOUT)
