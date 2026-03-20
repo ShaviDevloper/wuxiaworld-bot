@@ -8,7 +8,7 @@ Automates daily check-in and mission reward collection on [wuxiaworld.com](https
 - ✅ Daily attendance check-in
 - 🎯 Auto-claim available mission rewards
 - 📸 Error screenshots for debugging
-- ⏰ Runs automatically via GitHub Actions (daily at 2:00 AM UTC)
+- ⏰ Runs automatically via GitHub Actions (daily at 5:00 AM UTC)
 
 ## GitHub Actions Setup
 
