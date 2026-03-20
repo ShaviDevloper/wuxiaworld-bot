@@ -1,0 +1,51 @@
+name: WuxiaWorld Daily Sign-In Bot
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # Runs daily at 5:00 AM UTC (10:30 AM IST)
+  workflow_dispatch:        # Allows manual trigger from GitHub UI
+
+jobs:
+  daily-signin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-playwright
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run WuxiaWorld bot
+        env:
+          WW_EMAIL:    ${{ secrets.WW_EMAIL }}
+          WW_PASSWORD: ${{ secrets.WW_PASSWORD }}
+        run: python wuxiaworld_bot.py
+
+      - name: Upload logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs-${{ github.run_number }}
+          path: |
+            wuxiaworld_bot.log
+            error_*.png
+          retention-days: 7
