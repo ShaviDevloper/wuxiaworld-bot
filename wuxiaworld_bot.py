@@ -77,6 +77,79 @@ def load_state() -> dict | None:
 
 
 # ══════════════════════════════════════════════════════════════
+#  POPUP / OVERLAY HELPERS
+# ══════════════════════════════════════════════════════════════
+
+async def dismiss_popup(page, timeout: int = 3_000) -> bool:
+    """Detect and dismiss any WuxiaWorld popup/modal that might block interactions.
+
+    Handles the daily-rewards streaks dialog, generic MUI dialogs,
+    cookie banners, and other overlays.
+
+    Returns True if a popup was dismissed.
+    """
+    dismissed = False
+
+    # ── 1. Streaks / daily-reward dialog ──
+    try:
+        streaks = await page.wait_for_selector(
+            ".streaks-dialog, .MuiDialog-root.streaks-dialog",
+            timeout=timeout,
+            state="visible",
+        )
+        if streaks:
+            log.info("Detected streaks/daily-reward popup")
+            # Try the close (X) button first
+            close_btn = await page.query_selector(
+                ".streaks-dialog button[aria-label='close'], "
+                ".streaks-dialog .MuiIconButton-root, "
+                ".streaks-dialog button:has(svg)"
+            )
+            if close_btn:
+                await close_btn.click()
+                log.info("Closed streaks popup via close button ✓")
+                dismissed = True
+            else:
+                # Press Escape as fallback
+                await page.keyboard.press("Escape")
+                log.info("Closed streaks popup via Escape ✓")
+                dismissed = True
+            await page.wait_for_timeout(500)
+    except PWTimeoutError:
+        pass
+
+    # ── 2. Generic MUI dialog overlay ──
+    if not dismissed:
+        try:
+            mui_backdrop = await page.query_selector(
+                ".MuiBackdrop-root, .MuiDialog-root"
+            )
+            if mui_backdrop and await mui_backdrop.is_visible():
+                await page.keyboard.press("Escape")
+                log.info("Dismissed generic MUI dialog via Escape ✓")
+                dismissed = True
+                await page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+    # ── 3. Cookie / consent banners ──
+    try:
+        cookie_btn = await page.query_selector(
+            "button:has-text('Accept'), button:has-text('Got it'), "
+            "button:has-text('I agree'), [class*='cookie'] button"
+        )
+        if cookie_btn and await cookie_btn.is_visible():
+            await cookie_btn.click()
+            log.info("Dismissed cookie/consent banner ✓")
+            dismissed = True
+            await page.wait_for_timeout(500)
+    except Exception:
+        pass
+
+    return dismissed
+
+
+# ══════════════════════════════════════════════════════════════
 #  LOGIN
 # ══════════════════════════════════════════════════════════════
 
@@ -122,6 +195,97 @@ async def login(page, context):
     await save_state(context)
 
 
+async def collect_daily_login_reward(page) -> bool:
+    """Collect the daily login key reward from the streaks popup.
+
+    WuxiaWorld shows a 'Daily rewards' popup (streaks-dialog) after login.
+    It contains a streak tracker and a claim button (streaks-action-button).
+
+    Returns True if a reward was collected.
+    """
+    log.info("── Collecting daily login reward ──")
+
+    # Navigate to homepage to trigger the popup
+    try:
+        await page.goto(BASE_URL, wait_until="networkidle")
+    except PWTimeoutError:
+        log.warning("Homepage load timed out, still checking for popup …")
+
+    # Wait for the streaks dialog to appear
+    try:
+        await page.wait_for_selector(
+            ".streaks-dialog, .MuiDialog-root.streaks-dialog",
+            timeout=10_000,
+            state="visible",
+        )
+        log.info("Daily reward popup appeared ✓")
+    except PWTimeoutError:
+        log.info("No daily reward popup detected — may already be collected")
+        return False
+
+    # Small pause to let the dialog fully render
+    await page.wait_for_timeout(1_500)
+
+    # ── Try to click the action button ──
+    action_selectors = [
+        ".streaks-action-button",
+        ".streaks-dialog button[class*='action']",
+        ".streaks-dialog button:has-text('Claim')",
+        ".streaks-dialog button:has-text('Collect')",
+        ".streaks-dialog button:has-text('Check In')",
+        ".streaks-dialog button:has-text('Sign In')",
+    ]
+
+    for sel in action_selectors:
+        try:
+            btn = await page.query_selector(sel)
+            if btn and await btn.is_visible():
+                btn_text = (await btn.inner_text()).strip()
+                log.info("Found reward button: [%s] via %s", btn_text, sel)
+                await btn.click()
+                await page.wait_for_timeout(2_000)
+
+                # Check if a secondary confirmation or result appeared
+                try:
+                    result = await page.wait_for_selector(
+                        ".streaks-dialog [class*='result'], "
+                        ".streaks-dialog [class*='success'], "
+                        ".streaks-dialog [class*='reward'], "
+                        ".streaks-dialog [class*='key']",
+                        timeout=5_000,
+                    )
+                    if result:
+                        log.info("Daily reward result confirmed ✓")
+                except PWTimeoutError:
+                    log.info("Reward button clicked (no result element detected)")
+
+                # Dismiss the dialog after claiming
+                await dismiss_popup(page, timeout=2_000)
+                log.info("Daily login reward collected! ✓")
+                return True
+        except Exception as e:
+            log.debug("Selector %s failed: %s", sel, e)
+            continue
+
+    # If we saw the popup but couldn't click any button, try the
+    # "Continue Reading" / generic dismiss button
+    try:
+        fallback = await page.query_selector(
+            ".streaks-dialog button, .streaks-dialog a[role='button']"
+        )
+        if fallback and await fallback.is_visible():
+            fb_text = (await fallback.inner_text()).strip()
+            log.info("Clicking fallback button in reward popup: [%s]", fb_text)
+            await fallback.click()
+            await page.wait_for_timeout(1_000)
+    except Exception:
+        pass
+
+    await dismiss_popup(page, timeout=2_000)
+    log.info("Daily reward popup handled (reward may already be collected)")
+    return False
+
+
 # ══════════════════════════════════════════════════════════════
 #  DAILY CHECK-IN
 # ══════════════════════════════════════════════════════════════
@@ -129,6 +293,9 @@ async def login(page, context):
 async def do_checkin(page) -> bool:
     log.info("Navigating to check-in page …")
     await page.goto(CHECKIN_URL, wait_until="networkidle")
+
+    # Dismiss any popup that might overlay the check-in page
+    await dismiss_popup(page, timeout=3_000)
 
     selectors = [
         "button:has-text('Check In')",
@@ -183,6 +350,9 @@ async def do_missions(page):
     log.info("Navigating to missions page …")
     await page.goto(MISSIONS_URL, wait_until="networkidle")
     await page.wait_for_timeout(2_000)
+
+    # Dismiss any popup that might overlay the missions page
+    await dismiss_popup(page, timeout=3_000)
 
     claim_selectors = [
         "button:has-text('Claim')",
@@ -255,6 +425,9 @@ async def main():
                 await login(page, context)
             else:
                 log.info("Already logged in via saved session ✓")
+
+            # ── Collect daily login key reward (popup after login) ──
+            await collect_daily_login_reward(page)
 
             await do_checkin(page)
             await do_missions(page)
