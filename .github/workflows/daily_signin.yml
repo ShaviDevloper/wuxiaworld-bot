@@ -36,6 +36,7 @@ jobs:
 
       - name: Run WuxiaWorld bot
         env:
+          CI: "true"
           WW_EMAIL:    ${{ secrets.WW_EMAIL }}
           WW_PASSWORD: ${{ secrets.WW_PASSWORD }}
         run: python wuxiaworld_bot.py
@@ -48,4 +49,5 @@ jobs:
           path: |
             wuxiaworld_bot.log
             error_*.png
+            debug_*.png
           retention-days: 7
