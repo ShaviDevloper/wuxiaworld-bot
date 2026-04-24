@@ -40,9 +40,8 @@ LOG_FILE    = "wuxiaworld_bot.log"
 DEBUG_SHOTS = os.environ.get("CI", "false").lower() == "true"  # save debug screenshots in CI
 
 BASE_URL     = "https://www.wuxiaworld.com"
-LOGIN_URL    = f"{BASE_URL}/account/login"
-CHECKIN_URL  = f"{BASE_URL}/profile/monthly-attendance"
-MISSIONS_URL = f"{BASE_URL}/profile/missions"
+LOGIN_URL    = "https://identity.wuxiaworld.com/Account/Login"
+REWARDS_URL  = f"{BASE_URL}/manage/subscriptions/daily-rewards"
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -214,14 +213,12 @@ async def dismiss_popup(page, timeout: int = 3_000) -> bool:
 
 async def is_logged_in(page) -> bool:
     try:
+        # We check for elements that specifically only appear when logged in.
+        # The generic avatar does not have the notification bell next to it.
         await page.wait_for_selector(
-            "a[href*='/profile'], "
-            "[data-testid='user-menu'], "
-            ".user-avatar, img.avatar, "
-            "[class*='username'], "
-            "img[alt*='avatar'], "
-            "button[aria-label*='profile'], "
-            "a[href*='/account']",
+            "button[aria-label*='notification' i], "
+            "div.MuiBadge-root, "
+            "a[href*='/notifications' i]",
             timeout=8_000,
         )
         return True
@@ -283,10 +280,10 @@ async def collect_daily_login_reward(page) -> bool:
     """
     log.info("── Collecting daily login reward ──")
 
-    # Navigate to homepage to trigger the popup
-    await safe_goto(page, BASE_URL)
+    # Navigate to rewards page to trigger the popup
+    await safe_goto(page, REWARDS_URL)
 
-    await debug_screenshot(page, "homepage_before_popup")
+    await debug_screenshot(page, "rewards_page_before_popup")
 
     # Wait for the daily rewards dialog to appear.
     # The popup is rendered by React and may take several seconds.
@@ -446,110 +443,7 @@ async def collect_daily_login_reward(page) -> bool:
     return False
 
 
-# ══════════════════════════════════════════════════════════════
-#  DAILY CHECK-IN
-# ══════════════════════════════════════════════════════════════
 
-async def do_checkin(page) -> bool:
-    log.info("Navigating to check-in page …")
-    await safe_goto(page, CHECKIN_URL)
-
-    await debug_screenshot(page, "checkin_page")
-
-    # Dismiss any popup that might overlay the check-in page
-    await dismiss_popup(page, timeout=3_000)
-
-    selectors = [
-        "button:has-text('Check In')",
-        "button:has-text('Sign In')",
-        "button:has-text('Attend')",
-        ".attendance-btn:not(.disabled):not(.checked)",
-        "[class*='checkin']:not([class*='disabled']):not([class*='checked'])",
-        "button[class*='attend']:not([disabled])",
-        # MUI buttons
-        ".MuiButton-root:has-text('Check')",
-        ".MuiButton-root:has-text('Attend')",
-    ]
-
-    btn = None
-    for sel in selectors:
-        try:
-            btn = await page.wait_for_selector(sel, timeout=4_000, state="visible")
-            if btn:
-                log.info("Found check-in button via: %s", sel)
-                break
-        except PWTimeoutError:
-            continue
-
-    if not btn:
-        already = await page.query_selector(
-            ".checked, .today.active, [class*='today'][class*='done'], "
-            "button:disabled:has-text('Check')"
-        )
-        if already:
-            log.info("Already checked in today ✓")
-            return False
-        log.warning("Check-in button not found — site layout may have changed.")
-        await debug_screenshot(page, "checkin_btn_missing")
-        return False
-
-    await btn.click()
-    log.info("Clicked check-in button …")
-
-    try:
-        await page.wait_for_selector(
-            ".success, .modal, [class*='reward'], [class*='key'], .notification",
-            timeout=8_000,
-        )
-        log.info("Check-in SUCCESS — keys collected! ✓")
-    except PWTimeoutError:
-        log.info("Check-in clicked (no popup detected, may still be OK)")
-
-    await debug_screenshot(page, "after_checkin")
-    return True
-
-
-# ══════════════════════════════════════════════════════════════
-#  MISSIONS
-# ══════════════════════════════════════════════════════════════
-
-async def do_missions(page):
-    log.info("Navigating to missions page …")
-    await safe_goto(page, MISSIONS_URL)
-
-    await debug_screenshot(page, "missions_page")
-
-    # Dismiss any popup that might overlay the missions page
-    await dismiss_popup(page, timeout=3_000)
-
-    claim_selectors = [
-        "button:has-text('Claim')",
-        "button:has-text('Collect')",
-        "button:has-text('Receive')",
-        "[class*='claim']:not([disabled])",
-        "[class*='collect']:not([disabled])",
-    ]
-
-    claimed = 0
-    for sel in claim_selectors:
-        buttons = await page.query_selector_all(sel)
-        for btn in buttons:
-            try:
-                if await btn.get_attribute("disabled") is not None:
-                    continue
-                text = (await btn.inner_text()).strip()
-                log.info("Claiming mission reward: [%s]", text)
-                await btn.scroll_into_view_if_needed()
-                await btn.click()
-                await page.wait_for_timeout(1_500)
-                claimed += 1
-            except Exception as e:
-                log.debug("Skipped a button: %s", e)
-
-    if claimed:
-        log.info("Missions claimed: %d reward(s) ✓", claimed)
-    else:
-        log.info("No claimable missions found today")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -607,9 +501,7 @@ async def main():
 
             # ── Collect daily login key reward (popup after login) ──
             await collect_daily_login_reward(page)
-
-            await do_checkin(page)
-            await do_missions(page)
+            
             await save_state(context)
 
             log.info("All done! ✓")
