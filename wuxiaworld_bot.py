@@ -231,14 +231,14 @@ async def login(page, context):
     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=TIMEOUT)
     # Wait for the login form to be ready
     try:
-        await page.wait_for_selector("#Email", timeout=15_000, state="visible")
+        await page.wait_for_selector("#Username", timeout=15_000, state="visible")
     except PWTimeoutError:
         log.warning("Login form did not appear, taking screenshot …")
         await debug_screenshot(page, "login_form_missing")
 
     await debug_screenshot(page, "login_page")
 
-    await page.fill("#Email", EMAIL)
+    await page.fill("#Username", EMAIL)
     await page.fill("#Password", PASSWORD)
 
     # Check "Remember Me" if available
@@ -251,7 +251,7 @@ async def login(page, context):
         pass
 
     log.info("Submitting credentials …")
-    await page.click("button.btn-inverse, button:has-text('Sign In')")
+    await page.click("button.btn-inverse, button:has-text('Sign In'), button:has-text('Log in'), button[type='submit']")
 
     try:
         await page.wait_for_url(lambda u: "login" not in u, timeout=TIMEOUT)
