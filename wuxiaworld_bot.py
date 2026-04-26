@@ -212,17 +212,36 @@ async def dismiss_popup(page, timeout: int = 3_000) -> bool:
 # ══════════════════════════════════════════════════════════════
 
 async def is_logged_in(page) -> bool:
+    # Quick negative check: if a "LOG IN" button is visible, we are NOT logged in
     try:
-        # We check for elements that specifically only appear when logged in.
-        # The generic avatar does not have the notification bell next to it.
-        await page.wait_for_selector(
-            "button[aria-label*='notification' i], "
-            "div.MuiBadge-root, "
-            "a[href*='/notifications' i]",
-            timeout=8_000,
+        login_btn = await page.query_selector(
+            "button:has-text('LOG IN'), "
+            "a:has-text('LOG IN'), "
+            "button:has-text('Log In'), "
+            "a:has-text('Sign In')"
         )
+        if login_btn and await login_btn.is_visible():
+            log.info("'LOG IN' button visible → not logged in")
+            return False
+    except Exception:
+        pass
+
+    # Positive check: look for elements that only appear when logged in
+    logged_in_selectors = [
+        "button[aria-label*='notification' i]",
+        "div.MuiBadge-root",
+        "a[href*='/notifications' i]",
+        "a[href*='/profile' i]",
+        "a[href*='/manage' i]",
+        "a[href*='/account' i]",
+        "button[aria-label*='account' i]",
+    ]
+    selector_string = ", ".join(logged_in_selectors)
+    try:
+        await page.wait_for_selector(selector_string, timeout=10_000)
         return True
     except PWTimeoutError:
+        log.info("No logged-in indicators found on page")
         return False
 
 
@@ -241,24 +260,47 @@ async def login(page, context):
     await page.fill("#Username", EMAIL)
     await page.fill("#Password", PASSWORD)
 
-    # Check "Remember Me" if available
-    try:
-        remember = await page.query_selector("#RememberMe")
-        if remember and not await remember.is_checked():
-            await remember.check()
-            log.info("Checked 'Remember Me'")
-    except Exception:
-        pass
-
     log.info("Submitting credentials …")
-    await page.click("button.btn-inverse, button:has-text('Sign In'), button:has-text('Log in'), button[type='submit']")
+    await page.click("button:has-text('Log in'), button[type='submit']")
 
+    # ── Wait for the cross-domain redirect chain to finish ──
+    # identity.wuxiaworld.com → www.wuxiaworld.com callback → www.wuxiaworld.com
+    # The identity server redirects back with auth tokens; the SPA on the main
+    # domain needs to hydrate and establish the session.
     try:
-        await page.wait_for_url(lambda u: "login" not in u, timeout=TIMEOUT)
-        log.info("Login successful ✓")
+        # First wait: leave the identity domain
+        await page.wait_for_url(
+            lambda u: "identity.wuxiaworld.com" not in u,
+            timeout=TIMEOUT,
+        )
+        log.info("Redirected away from identity server → %s", page.url)
     except PWTimeoutError:
-        await debug_screenshot(page, "login_failed")
-        if not await is_logged_in(page):
+        log.error("Never redirected away from identity server")
+        await debug_screenshot(page, "login_stuck_on_identity")
+        raise RuntimeError("Login failed — stuck on identity page.")
+
+    await debug_screenshot(page, "after_redirect")
+
+    # ── Navigate to the main site and wait for the SPA to fully load ──
+    log.info("Navigating to main site to verify session …")
+    await safe_goto(page, BASE_URL)
+    await debug_screenshot(page, "main_site_after_login")
+
+    # ── Verify we are actually logged in ──
+    if await is_logged_in(page):
+        log.info("Login verified on main site ✓")
+    else:
+        log.warning("Not logged in after first attempt, retrying navigation …")
+        # Sometimes the SPA needs an extra load to pick up the auth cookies
+        await page.wait_for_timeout(5_000)
+        await page.reload(wait_until="domcontentloaded")
+        await wait_for_spa_ready(page)
+        await debug_screenshot(page, "main_site_retry")
+
+        if await is_logged_in(page):
+            log.info("Login verified on retry ✓")
+        else:
+            await debug_screenshot(page, "login_failed")
             log.error("Login failed — check WW_EMAIL / WW_PASSWORD credentials.")
             raise RuntimeError("Login failed.")
 
@@ -284,6 +326,26 @@ async def collect_daily_login_reward(page) -> bool:
     await safe_goto(page, REWARDS_URL)
 
     await debug_screenshot(page, "rewards_page_before_popup")
+
+    # ── Check for "Access Denied" — means session is invalid ──
+    try:
+        access_denied = await page.query_selector("text='Access Denied'")
+        if access_denied and await access_denied.is_visible():
+            log.error("Rewards page shows 'Access Denied' — not authenticated!")
+            await debug_screenshot(page, "rewards_access_denied")
+            # Try clicking the "Click here to login" link to re-authenticate
+            login_link = await page.query_selector(
+                "a:has-text('Click here to login'), "
+                "a:has-text('login'), "
+                "button:has-text('login')"
+            )
+            if login_link and await login_link.is_visible():
+                log.info("Clicking 'Click here to login' to re-authenticate …")
+                await login_link.click()
+                await page.wait_for_timeout(3_000)
+            return False
+    except Exception:
+        pass
 
     # Wait for the daily rewards dialog to appear.
     # The popup is rendered by React and may take several seconds.
